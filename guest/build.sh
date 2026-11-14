@@ -9,6 +9,8 @@
 # userspace-rcu だけを取り出す。
 
 set -eu
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
 MODE=$1
 REL=$(uname -r)
 SRC=/usr/src

@@ -7,6 +7,8 @@
 # どちらの named も、いま /usr/lib に入っている libdns で動く。
 
 set -u
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
 L=$1
 W=/tmp/repro-$L
 rm -rf $W
@@ -36,7 +38,8 @@ options {
 	listen-on-v6 { none; };
 	recursion no;
 	allow-transfer { any; };
-	notify no;
+	notify explicit;
+	also-notify { 127.0.0.3; };
 };
 controls { };
 zone "example.test" { type primary; file "example.test.db"; };
@@ -72,10 +75,16 @@ SPID=$!
 
 r=timeout
 n=0
-while [ $n -lt 60 ]; do
+while [ $n -lt 360 ]; do
 	if grep -q 'Transfer completed' $W/s.log; then r=completed; break; fi
 	if grep -q -E 'assertion|INSIST' $W/s.log; then r=crashed; break; fi
 	if ! kill -0 $SPID 2>/dev/null; then r=exited; break; fi
+	if [ $n = 10 ]; then
+		# 起動直後に送った NOTIFY を secondary が取りこぼしていても転送が始まるように、
+		# serial を上げて primary に読み直させ、もう一度 NOTIFY を出させる。
+		sed -i 's/ 1 3600 600/ 2 3600 600/' $W/p/example.test.db
+		kill -HUP $PPID_
+	fi
 	sleep 1
 	n=$((n + 1))
 done
