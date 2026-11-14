@@ -14,6 +14,9 @@ on:
       image:
         description: 'zakinko/netbsd-ci-images の release にあるイメージ'
         default: 'i386-11.0'
+      diff:
+        description: '当てる diff (guest/ の下の名前)'
+        default: 'bind-ilp32.diff'
   push:
     branches: [main]
     paths:
@@ -30,6 +33,7 @@ jobs:
     timeout-minutes: 90
     env:
       IMG: ${{ inputs.image || 'i386-11.0' }}
+      DIFF: ${{ inputs.diff || 'bind-ilp32.diff' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +84,7 @@ jobs:
         run: |
           set -e
           SSH=$(cat $IMG.ssh)
-          $SSH 'sh /root/t/build.sh patched' > b2.log 2>&1 || { tail -80 b2.log; exit 1; }
+          $SSH "sh /root/t/build.sh patched $DIFF" > b2.log 2>&1 || { tail -80 b2.log; exit 1; }
           tail -12 b2.log
           $SSH 'sh /root/t/repro.sh fixed' | tee r3.log
 

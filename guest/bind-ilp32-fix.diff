@@ -1,0 +1,37 @@
+diff --git a/external/mpl/bind/dist/lib/dns/qp.c b/external/mpl/bind/dist/lib/dns/qp.c
+index 84453165..2b1e7c52 100644
+--- a/external/mpl/bind/dist/lib/dns/qp.c
++++ b/external/mpl/bind/dist/lib/dns/qp.c
+@@ -77,7 +77,8 @@ static isc_mutex_t qp_mutex = PTHREAD_MUTEX_INITIALIZER;
+ #define ISC_QP_ADD(v, a) \
+ 	({ \
+ 		isc_mutex_lock(&qp_mutex); \
+-		uint64_t x = (v) + (a); \
++		uint64_t x = (v); \
++		(v) = x + (a); \
+ 		isc_mutex_unlock(&qp_mutex); \
+ 		x; \
+ 	})
+diff --git a/external/mpl/bind/dist/lib/dns/zone.c b/external/mpl/bind/dist/lib/dns/zone.c
+index 679f8840..0ab79ef2 100644
+--- a/external/mpl/bind/dist/lib/dns/zone.c
++++ b/external/mpl/bind/dist/lib/dns/zone.c
+@@ -543,14 +543,16 @@ struct dns_zone {
+ #define ISC_ZONE_SET(z, f, o) \
+ 	({ \
+ 		isc_mutex_lock(&(z)->atomic_lock); \
+-		uint64_t x = ((z)->f | (o)); \
++		uint64_t x = (z)->f; \
++		(z)->f = x | (o); \
+ 		isc_mutex_unlock(&(z)->atomic_lock); \
+ 		x; \
+ 	})
+ #define ISC_ZONE_CLR(z, f, o) \
+ 	({ \
+ 		isc_mutex_lock(&(z)->atomic_lock); \
+-		uint64_t x = ((z)->f & ~(o)); \
++		uint64_t x = (z)->f; \
++		(z)->f = x & ~(o); \
+ 		isc_mutex_unlock(&(z)->atomic_lock); \
+ 		x; \
+ 	})

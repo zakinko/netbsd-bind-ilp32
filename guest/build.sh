@@ -2,7 +2,7 @@
 # base の libisc と libdns を /usr/src から建て、/usr/lib のものと入れ替える。
 #
 #   sh build.sh plain     当て物なしで建てる (足場が元の動きを再現するかの対照)
-#   sh build.sh patched   bind-ilp32.diff を当てて建て直す
+#   sh build.sh patched [diff]   diff (既定 bind-ilp32.diff) を当てて建て直す
 #
 # libdns の LIBDPLIBS が libisc の objdir を指すので、libisc も建てる。
 # src は動いている版の src.tgz から bind と、その header が要る libuv と
@@ -12,6 +12,7 @@ set -eu
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 export PATH
 MODE=$1
+DIFF=${2:-bind-ilp32.diff}
 REL=$(uname -r)
 SRC=/usr/src
 J=$(sysctl -n hw.ncpu)
@@ -31,7 +32,7 @@ if [ ! -d $SRC/external/mpl/bind ]; then
 fi
 
 if [ $MODE = patched ]; then
-	(cd $SRC && patch -p1 < /root/t/bind-ilp32.diff)
+	(cd $SRC && patch -f -p1 -i /root/t/$DIFF </dev/null)
 	grep -n -A2 'define ISC_ZONE_SET(z, f, o)' \
 	    $SRC/external/mpl/bind/dist/lib/dns/zone.c
 fi
