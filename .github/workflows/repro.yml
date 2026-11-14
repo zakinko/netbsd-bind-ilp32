@@ -66,6 +66,9 @@ jobs:
             $SSH "cat > /root/t/$(basename $f)" < $f
           done
           $SSH 'uname -a; /usr/sbin/named -v; df -h /'
+          # 差し替える前の配布物の md5。入れる先の機械の /usr/lib と比べて、
+          # 同じ版のものに当てることを確かめるために残す。
+          $SSH 'md5 /usr/lib/libdns.so.26.0 /usr/lib/libisc.so.23.0 /usr/sbin/named > /root/t/stock.md5; cat /root/t/stock.md5'
 
       - name: 1. 素の named
         run: |
@@ -94,6 +97,25 @@ jobs:
           grep -q 'RESULT stock: crashed' r1.log
           grep -q 'RESULT rebuilt: crashed' r2.log
           grep -q 'RESULT fixed: completed' r3.log
+
+      - name: 入れ替える libdns を取り出す
+        if: success()
+        run: |
+          set -e
+          SSH=$(cat $IMG.ssh)
+          mkdir -p out
+          $SSH 'cat /usr/lib/libdns.so.26.0' > out/libdns.so.26.0
+          $SSH 'cat /root/t/stock.md5' > out/stock.md5 2>/dev/null || true
+          (cd out && md5sum libdns.so.26.0 > libdns.so.26.0.md5)
+          cp guest/$DIFF out/
+          cat out/*.md5
+
+      - name: libdns を残す
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libdns-${{ env.IMG }}
+          path: out/
 
       - name: log を残す
         if: always()

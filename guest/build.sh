@@ -45,7 +45,13 @@ M="make NETBSDSRCDIR=$SRC USETOOLS=no DPADD= MKDOC=no MKLINT=no MKPROFILE=no MKD
 (cd $SRC/external/mpl/bind/lib/libisc && $M dependall)
 (cd $SRC/external/mpl/bind/lib/libdns && $M dependall)
 
-for l in isc dns; do
+# 入れ替えるのは当て物が触るライブラリだけにする。libdns だけを直す diff なら
+# libisc は配布物のまま動かし、入れる先の機械でする差し替えと条件を揃える。
+LIBS=dns
+if [ $MODE = patched ] && grep -q '^+++ .*/lib/isc/' /root/t/$DIFF; then
+	LIBS="isc dns"
+fi
+for l in $LIBS; do
 	cd $SRC/external/mpl/bind/lib/lib$l
 	SO=$(ls lib$l.so.*.* | head -1)
 	[ -f /usr/lib/$SO ] || { echo "!! /usr/lib/$SO が無い。名前が違う"; ls -l /usr/lib/lib$l.so*; exit 1; }
