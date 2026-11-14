@@ -40,6 +40,8 @@ options {
 	allow-transfer { any; };
 	notify explicit;
 	also-notify { 127.0.0.3; };
+	notify-source 127.0.0.2;
+	transfer-source 127.0.0.2;
 };
 controls { };
 zone "example.test" { type primary; file "example.test.db"; };
