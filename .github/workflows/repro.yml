@@ -1,0 +1,103 @@
+name: repro
+
+# NetBSD/i386 の base の named が、secondary への転送の終わりで
+# INSIST(DNS_ZONE_FLAG(zone, DNS_ZONEFLG_REFRESH)) に落ちるのを再現し、
+# bind-ilp32.diff で直ることを確かめる。
+#
+#   1. 素の named で転送させる             -> crashed になるはず
+#   2. 当て物なしで libdns を建て直す       -> crashed (足場が元と同じ動きか)
+#   3. 当て物を当てて建て直す               -> completed になるはず
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'zakinko/netbsd-ci-images の release にあるイメージ'
+        default: 'i386-11.0'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/repro.yml'
+      - 'guest/**'
+
+concurrency:
+  group: repro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      IMG: ${{ inputs.image || 'i386-11.0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/netbsd-ci-images
+          path: ci
+
+      - name: qemu を入れる
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 netcat-openbsd
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: イメージを取って起動する
+        run: |
+          set -e
+          B=https://github.com/zakinko/netbsd-ci-images/releases/download/images
+          curl -fsSL -O $B/$IMG.qcow2
+          curl -fsSL -O $B/$IMG.qemu
+          DIR=$PWD sh ci/runvm.sh $IMG 2222
+
+      - name: script を送る
+        run: |
+          set -e
+          SSH=$(cat $IMG.ssh)
+          $SSH 'mkdir -p /root/t'
+          for f in guest/*; do
+            $SSH "cat > /root/t/$(basename $f)" < $f
+          done
+          $SSH 'uname -a; /usr/sbin/named -v; df -h /'
+
+      - name: 1. 素の named
+        run: |
+          SSH=$(cat $IMG.ssh)
+          $SSH 'sh /root/t/repro.sh stock' | tee r1.log
+
+      - name: 2. 当て物なしで建て直す
+        run: |
+          set -e
+          SSH=$(cat $IMG.ssh)
+          $SSH 'sh /root/t/build.sh plain' > b1.log 2>&1 || { tail -80 b1.log; exit 1; }
+          tail -5 b1.log
+          $SSH 'sh /root/t/repro.sh rebuilt' | tee r2.log
+
+      - name: 3. 当て物を当てて建て直す
+        run: |
+          set -e
+          SSH=$(cat $IMG.ssh)
+          $SSH 'sh /root/t/build.sh patched' > b2.log 2>&1 || { tail -80 b2.log; exit 1; }
+          tail -12 b2.log
+          $SSH 'sh /root/t/repro.sh fixed' | tee r3.log
+
+      - name: 判定
+        run: |
+          grep -h '^RESULT' r1.log r2.log r3.log | tee -a $GITHUB_STEP_SUMMARY
+          grep -q 'RESULT stock: crashed' r1.log
+          grep -q 'RESULT rebuilt: crashed' r2.log
+          grep -q 'RESULT fixed: completed' r3.log
+
+      - name: log を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: '*.log'
+
+      - name: 止める
+        if: always()
+        run: DIR=$PWD sh ci/stopvm.sh $IMG || true
