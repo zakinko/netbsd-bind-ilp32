@@ -93,6 +93,31 @@ while [ $n -lt 360 ]; do
 done
 sleep 2
 
+if [ $r = completed ]; then
+	# primary の serial を上げて読み直させ、secondary に NOTIFY が届くかを見る。
+	# 届けば secondary は serial 3 を取りに来る。bin/60833 と同じ経路。
+	sed -i 's/ [12] 3600 600/ 3 3600 600/' $W/p/example.test.db
+	kill -HUP $PPID_
+	n=0
+	while [ $n -lt 30 ]; do
+		grep -q 'serial 3' $W/s.log && break
+		sleep 1
+		n=$((n + 1))
+	done
+	echo "== NOTIFY"
+	grep -i -E 'sending notif|notify' $W/p.log | tail -5
+	grep -i -E 'notify from|serial 3' $W/s.log | tail -5
+	if grep -q 'notify from 127.0.0.2' $W/s.log; then
+		echo "NOTIFY $L: received"
+	else
+		echo "NOTIFY $L: none"
+	fi
+else
+	echo "== NOTIFY (primary)"
+	grep -i -E 'sending notif|notify' $W/p.log | tail -5
+	echo "NOTIFY $L: primary sent $(grep -c -i 'sending notif' $W/p.log)"
+fi
+
 echo "== primary log (tail)"
 tail -15 $W/p.log
 echo "== secondary log (tail)"
