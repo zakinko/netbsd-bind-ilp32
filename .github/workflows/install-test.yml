@@ -1,0 +1,84 @@
+name: install-test
+
+# release に置いた libdns を、まっさらな NetBSD 11.1/i386 で一行で入れ替え、
+# secondary への転送と NOTIFY が通るかを確かめる。元に戻せることも見る。
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: install-test
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      IMG: i386-11.1
+      URL: https://github.com/zakinko/netbsd-bind-ilp32/releases/download/netbsd-11.1-i386/install-libdns.sh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zakinko/netbsd-ci-images
+          path: ci
+
+      - name: qemu を入れる
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 netcat-openbsd
+          sudo chmod 666 /dev/kvm
+
+      - name: イメージを取って起動する
+        run: |
+          set -e
+          B=https://github.com/zakinko/netbsd-ci-images/releases/download/images
+          curl -fsSL -O $B/$IMG.qcow2
+          curl -fsSL -O $B/$IMG.qemu
+          DIR=$PWD sh ci/runvm.sh $IMG 2222
+
+      - name: 素の named
+        run: |
+          set -e
+          SSH=$(cat $IMG.ssh)
+          $SSH 'mkdir -p /root/t'
+          $SSH 'cat > /root/t/repro.sh' < guest/repro.sh
+          $SSH 'sh /root/t/repro.sh stock' | tee r1.log
+
+      - name: 一行で入れ替える
+        run: |
+          SSH=$(cat $IMG.ssh)
+          $SSH "ftp -V -o - $URL | sh" | tee i1.log
+
+      - name: 入れ替えた named
+        run: |
+          SSH=$(cat $IMG.ssh)
+          $SSH 'sh /root/t/repro.sh installed' | tee r2.log
+
+      - name: 元に戻す
+        run: |
+          SSH=$(cat $IMG.ssh)
+          $SSH "ftp -V -o - $URL | sh -s restore" | tee i2.log
+          $SSH 'md5 /usr/lib/libdns.so.26.0; ls /usr/lib/libdns.so.26.0.orig 2>&1 || true'
+          $SSH 'sh /root/t/repro.sh restored' | tee r3.log
+
+      - name: 判定
+        run: |
+          grep -h -E '^(RESULT|NOTIFY)' r1.log r2.log r3.log | tee -a $GITHUB_STEP_SUMMARY
+          grep -q 'RESULT stock: crashed' r1.log
+          grep -q 'RESULT installed: completed' r2.log
+          grep -q 'NOTIFY installed: received' r2.log
+          grep -q 'RESULT restored: crashed' r3.log
+
+      - name: log を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-logs
+          path: '*.log'
+
+      - name: 止める
+        if: always()
+        run: DIR=$PWD sh ci/stopvm.sh $IMG || true
