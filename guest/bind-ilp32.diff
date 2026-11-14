@@ -12,6 +12,27 @@ index 84453165..2b1e7c52 100644
  		isc_mutex_unlock(&qp_mutex); \
  		x; \
  	})
+diff --git a/external/mpl/bind/dist/lib/dns/xfrin.c b/external/mpl/bind/dist/lib/dns/xfrin.c
+index 0caa0583..92b09428 100644
+--- a/external/mpl/bind/dist/lib/dns/xfrin.c
++++ b/external/mpl/bind/dist/lib/dns/xfrin.c
+@@ -180,9 +180,13 @@ struct dns_xfrin {
+ 	_Atomic(isc_time_t) start;   /*%< Start time of the transfer */
+ 	atomic_uint_fast64_t rate_bytes_per_second;
+ #else
+-	atomic_uint_fast32_t nbytes; /*%< Number of bytes received */
+-	isc_time_t start;	     /*%< Start time of the transfer */
+-	atomic_uint_fast32_t rate_bytes_per_second;
++	/*
++	 * Accessed only through ISC_XFRIN_*, under xfrin_lock.  These
++	 * used to be 32 bits wide and wrapped on transfers over 4GB.
++	 */
++	uint64_t nbytes;   /*%< Number of bytes received */
++	isc_time_t start;  /*%< Start time of the transfer */
++	uint64_t rate_bytes_per_second;
+ #endif
+ 	_Atomic(dns_transport_type_t) soa_transport_type;
+ 	atomic_uint_fast32_t end_serial;
 diff --git a/external/mpl/bind/dist/lib/dns/zone.c b/external/mpl/bind/dist/lib/dns/zone.c
 index 679f8840..0ab79ef2 100644
 --- a/external/mpl/bind/dist/lib/dns/zone.c
@@ -35,3 +56,261 @@ index 679f8840..0ab79ef2 100644
  		isc_mutex_unlock(&(z)->atomic_lock); \
  		x; \
  	})
+diff --git a/external/mpl/bind/dist/lib/isc/histo.c b/external/mpl/bind/dist/lib/isc/histo.c
+index 5037e5c5..e52779c4 100644
+--- a/external/mpl/bind/dist/lib/isc/histo.c
++++ b/external/mpl/bind/dist/lib/isc/histo.c
+@@ -64,8 +64,31 @@
+ 
+ #ifdef _LP64
+ typedef atomic_uint_fast64_t hg_bucket_t;
++#define ISC_HG_GET(bp)	  atomic_load_relaxed(bp)
++#define ISC_HG_ADD(bp, a) atomic_fetch_add_relaxed(bp, a)
+ #else
+-typedef atomic_uint_fast32_t hg_bucket_t;
++/*
++ * Not every ILP32 port has 64-bit atomics, so the buckets are plain
++ * uint64_t protected by a mutex.  They used to be 32 bits wide here and
++ * wrapped once a bucket passed 2^32.
++ */
++typedef uint64_t hg_bucket_t;
++static isc_mutex_t hg_mutex = PTHREAD_MUTEX_INITIALIZER;
++#define ISC_HG_GET(bp) \
++	({ \
++		isc_mutex_lock(&hg_mutex); \
++		uint64_t x = *(bp); \
++		isc_mutex_unlock(&hg_mutex); \
++		x; \
++	})
++#define ISC_HG_ADD(bp, a) \
++	({ \
++		isc_mutex_lock(&hg_mutex); \
++		uint64_t x = *(bp); \
++		*(bp) = x + (a); \
++		isc_mutex_unlock(&hg_mutex); \
++		x; \
++	})
+ #endif
+ typedef atomic_ptr(hg_bucket_t) hg_chunk_t;
+ 
+@@ -268,7 +291,7 @@ key_to_bucket(const isc_histo_t *hg, uint key) {
+ 
+ static inline uint64_t
+ bucket_count(const hg_bucket_t *bp) {
+-	return bp == NULL ? 0 : atomic_load_relaxed(bp);
++	return bp == NULL ? 0 : ISC_HG_GET(bp);
+ }
+ 
+ static inline uint64_t
+@@ -282,7 +305,7 @@ add_key_count(isc_histo_t *hg, uint key, uint64_t inc) {
+ 	if (inc > 0) {
+ 		hg_bucket_t *bp = key_to_bucket(hg, key);
+ 		bp = bp != NULL ? bp : key_to_new_bucket(hg, key);
+-		atomic_fetch_add_relaxed(bp, inc);
++		ISC_HG_ADD(bp, inc);
+ 	}
+ }
+ 
+diff --git a/external/mpl/bind/dist/lib/isc/stats.c b/external/mpl/bind/dist/lib/isc/stats.c
+index cb96c914..e3ad9267 100644
+--- a/external/mpl/bind/dist/lib/isc/stats.c
++++ b/external/mpl/bind/dist/lib/isc/stats.c
+@@ -22,6 +22,7 @@
+ #include <isc/buffer.h>
+ #include <isc/magic.h>
+ #include <isc/mem.h>
++#include <isc/mutex.h>
+ #include <isc/refcount.h>
+ #include <isc/stats.h>
+ #include <isc/util.h>
+@@ -44,9 +45,59 @@ struct isc_stats {
+ 	isc_mem_t *mctx;
+ 	isc_refcount_t references;
+ 	int ncounters;
++#ifdef _LP64
+ 	isc_atomic_statscounter_t *counters;
++#else
++	uint64_t *counters;
++#endif
+ };
+ 
++#ifdef _LP64
++#define ISC_STATS_INIT(p, v)	 atomic_init(p, v)
++#define ISC_STATS_GET(p)	 atomic_load_acquire(p)
++#define ISC_STATS_SET(p, v)	 atomic_store_release(p, v)
++#define ISC_STATS_ADD(p, v)	 atomic_fetch_add_relaxed(p, v)
++#define ISC_STATS_SUB(p, v)	 atomic_fetch_sub_release(p, v)
++#else
++/*
++ * Not every ILP32 port has 64-bit atomics, so the counters are plain
++ * uint64_t protected by a mutex.  They used to be isc_statscounter_t,
++ * which is 32 bits wide here, and wrapped once a counter passed 2^31.
++ * The dump function is handed uint64_t, so it now sees the full count.
++ */
++static isc_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
++#define ISC_STATS_INIT(p, v) (*(p) = (v))
++#define ISC_STATS_GET(p) \
++	({ \
++		isc_mutex_lock(&stats_mutex); \
++		uint64_t x = *(p); \
++		isc_mutex_unlock(&stats_mutex); \
++		x; \
++	})
++#define ISC_STATS_SET(p, v) \
++	({ \
++		isc_mutex_lock(&stats_mutex); \
++		*(p) = (v); \
++		isc_mutex_unlock(&stats_mutex); \
++	})
++#define ISC_STATS_ADD(p, v) \
++	({ \
++		isc_mutex_lock(&stats_mutex); \
++		uint64_t x = *(p); \
++		*(p) = x + (v); \
++		isc_mutex_unlock(&stats_mutex); \
++		x; \
++	})
++#define ISC_STATS_SUB(p, v) \
++	({ \
++		isc_mutex_lock(&stats_mutex); \
++		uint64_t x = *(p); \
++		*(p) = x - (v); \
++		isc_mutex_unlock(&stats_mutex); \
++		x; \
++	})
++#endif
++
+ void
+ isc_stats_attach(isc_stats_t *stats, isc_stats_t **statsp) {
+ 	REQUIRE(ISC_STATS_VALID(stats));
+@@ -68,7 +119,7 @@ isc_stats_detach(isc_stats_t **statsp) {
+ 	if (isc_refcount_decrement(&stats->references) == 1) {
+ 		isc_refcount_destroy(&stats->references);
+ 		isc_mem_cput(stats->mctx, stats->counters, stats->ncounters,
+-			     sizeof(isc_atomic_statscounter_t));
++			     sizeof(*stats->counters));
+ 		isc_mem_putanddetach(&stats->mctx, stats, sizeof(*stats));
+ 	}
+ }
+@@ -85,12 +136,12 @@ isc_stats_create(isc_mem_t *mctx, isc_stats_t **statsp, int ncounters) {
+ 	REQUIRE(statsp != NULL && *statsp == NULL);
+ 
+ 	isc_stats_t *stats = isc_mem_get(mctx, sizeof(*stats));
+-	size_t counters_alloc_size = sizeof(isc_atomic_statscounter_t) *
++	size_t counters_alloc_size = sizeof(*stats->counters) *
+ 				     ncounters;
+ 	stats->counters = isc_mem_get(mctx, counters_alloc_size);
+ 	isc_refcount_init(&stats->references, 1);
+ 	for (int i = 0; i < ncounters; i++) {
+-		atomic_init(&stats->counters[i], 0);
++		ISC_STATS_INIT(&stats->counters[i], 0);
+ 	}
+ 	stats->mctx = NULL;
+ 	isc_mem_attach(mctx, &stats->mctx);
+@@ -104,7 +155,7 @@ isc_stats_increment(isc_stats_t *stats, isc_statscounter_t counter) {
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 	REQUIRE(counter < stats->ncounters);
+ 
+-	return atomic_fetch_add_relaxed(&stats->counters[counter], 1);
++	return ISC_STATS_ADD(&stats->counters[counter], 1);
+ }
+ 
+ void
+@@ -112,9 +163,9 @@ isc_stats_decrement(isc_stats_t *stats, isc_statscounter_t counter) {
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 	REQUIRE(counter < stats->ncounters);
+ #if ISC_STATS_CHECKUNDERFLOW
+-	REQUIRE(atomic_fetch_sub_release(&stats->counters[counter], 1) > 0);
++	REQUIRE(ISC_STATS_SUB(&stats->counters[counter], 1) > 0);
+ #else
+-	atomic_fetch_sub_release(&stats->counters[counter], 1);
++	ISC_STATS_SUB(&stats->counters[counter], 1);
+ #endif
+ }
+ 
+@@ -126,8 +177,7 @@ isc_stats_dump(isc_stats_t *stats, isc_stats_dumper_t dump_fn, void *arg,
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 
+ 	for (i = 0; i < stats->ncounters; i++) {
+-		isc_statscounter_t counter =
+-			atomic_load_acquire(&stats->counters[i]);
++		uint64_t counter = ISC_STATS_GET(&stats->counters[i]);
+ 		if ((options & ISC_STATSDUMP_VERBOSE) == 0 && counter == 0) {
+ 			continue;
+ 		}
+@@ -140,7 +190,7 @@ isc_stats_set(isc_stats_t *stats, uint64_t val, isc_statscounter_t counter) {
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 	REQUIRE(counter < stats->ncounters);
+ 
+-	atomic_store_release(&stats->counters[counter], val);
++	ISC_STATS_SET(&stats->counters[counter], val);
+ }
+ 
+ void
+@@ -149,6 +199,7 @@ isc_stats_update_if_greater(isc_stats_t *stats, isc_statscounter_t counter,
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 	REQUIRE(counter < stats->ncounters);
+ 
++#ifdef _LP64
+ 	isc_statscounter_t curr_value =
+ 		atomic_load_acquire(&stats->counters[counter]);
+ 	do {
+@@ -157,6 +208,13 @@ isc_stats_update_if_greater(isc_stats_t *stats, isc_statscounter_t counter,
+ 		}
+ 	} while (!atomic_compare_exchange_weak_acq_rel(
+ 		&stats->counters[counter], &curr_value, value));
++#else
++	isc_mutex_lock(&stats_mutex);
++	if ((int64_t)stats->counters[counter] < (int64_t)value) {
++		stats->counters[counter] = value;
++	}
++	isc_mutex_unlock(&stats_mutex);
++#endif
+ }
+ 
+ isc_statscounter_t
+@@ -164,14 +222,18 @@ isc_stats_get_counter(isc_stats_t *stats, isc_statscounter_t counter) {
+ 	REQUIRE(ISC_STATS_VALID(stats));
+ 	REQUIRE(counter < stats->ncounters);
+ 
+-	return atomic_load_acquire(&stats->counters[counter]);
++	return ISC_STATS_GET(&stats->counters[counter]);
+ }
+ 
+ void
+ isc_stats_resize(isc_stats_t **statsp, int ncounters) {
+ 	isc_stats_t *stats;
+ 	size_t counters_alloc_size;
++#ifdef _LP64
+ 	isc_atomic_statscounter_t *newcounters;
++#else
++	uint64_t *newcounters;
++#endif
+ 
+ 	REQUIRE(statsp != NULL && *statsp != NULL);
+ 	REQUIRE(ISC_STATS_VALID(*statsp));
+@@ -184,17 +246,21 @@ isc_stats_resize(isc_stats_t **statsp, int ncounters) {
+ 	}
+ 
+ 	/* Grow number of counters. */
+-	counters_alloc_size = sizeof(isc_atomic_statscounter_t) * ncounters;
++	counters_alloc_size = sizeof(*newcounters) * ncounters;
+ 	newcounters = isc_mem_get(stats->mctx, counters_alloc_size);
+ 	for (int i = 0; i < ncounters; i++) {
+-		atomic_init(&newcounters[i], 0);
++		ISC_STATS_INIT(&newcounters[i], 0);
+ 	}
+ 	for (int i = 0; i < stats->ncounters; i++) {
++#ifdef _LP64
+ 		uint32_t counter = atomic_load_acquire(&stats->counters[i]);
+ 		atomic_store_release(&newcounters[i], counter);
++#else
++		newcounters[i] = ISC_STATS_GET(&stats->counters[i]);
++#endif
+ 	}
+ 	isc_mem_cput(stats->mctx, stats->counters, stats->ncounters,
+-		     sizeof(isc_atomic_statscounter_t));
++		     sizeof(*stats->counters));
+ 	stats->counters = newcounters;
+ 	stats->ncounters = ncounters;
+ }

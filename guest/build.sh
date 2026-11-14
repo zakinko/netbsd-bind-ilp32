@@ -1,5 +1,5 @@
 #!/bin/sh
-# base の libisc と libdns を /usr/src から建て、libdns を /usr/lib に入れ替える。
+# base の libisc と libdns を /usr/src から建て、/usr/lib のものと入れ替える。
 #
 #   sh build.sh plain     当て物なしで建てる (足場が元の動きを再現するかの対照)
 #   sh build.sh patched   bind-ilp32.diff を当てて建て直す
@@ -37,12 +37,15 @@ if [ $MODE = patched ]; then
 fi
 
 M="make NETBSDSRCDIR=$SRC USETOOLS=no MKDOC=no MKLINT=no MKPROFILE=no MKDEBUGLIB=no MKSTATICLIB=no -j$J"
+# libisc は libuv を libuv_pic.a から static に取り込むので、先に建てる。
+(cd $SRC/external/mit/libuv/lib && $M dependall)
 (cd $SRC/external/mpl/bind/lib/libisc && $M dependall)
 (cd $SRC/external/mpl/bind/lib/libdns && $M dependall)
 
-cd $SRC/external/mpl/bind/lib/libdns
-SO=$(ls libdns.so.*.* | head -1)
-[ -f /usr/lib/$SO ] || { echo "!! /usr/lib/$SO が無い。名前が違う"; ls -l /usr/lib/libdns.so*; exit 1; }
-cp /usr/lib/$SO /root/$SO.orig 2>/dev/null || true
-install -m 444 $SO /usr/lib/$SO
-md5 $SO /usr/lib/$SO
+for l in isc dns; do
+	cd $SRC/external/mpl/bind/lib/lib$l
+	SO=$(ls lib$l.so.*.* | head -1)
+	[ -f /usr/lib/$SO ] || { echo "!! /usr/lib/$SO が無い。名前が違う"; ls -l /usr/lib/lib$l.so*; exit 1; }
+	install -m 444 $SO /usr/lib/$SO
+	md5 $SO /usr/lib/$SO
+done

@@ -55,6 +55,7 @@ options {
 	notify no;
 	transfer-source 127.0.0.3;
 };
+statistics-channels { inet 127.0.0.3 port 8053 allow { 127.0.0.1; 127.0.0.3; }; };
 controls { };
 zone "example.test" {
 	type secondary;
@@ -63,9 +64,8 @@ zone "example.test" {
 };
 EOF
 
-echo "== libdns in use"
-ls -l /usr/lib/libdns.so*
-md5 /usr/lib/libdns.so.*.* 2>/dev/null
+echo "== libisc and libdns in use"
+md5 /usr/lib/libisc.so.*.* /usr/lib/libdns.so.*.* 2>/dev/null
 
 /usr/sbin/named -g -c $W/p/named.conf > $W/p.log 2>&1 &
 PPID_=$!
@@ -97,6 +97,17 @@ tail -40 $W/s.log
 if [ $r = completed ]; then
 	echo "== AXFR from the secondary"
 	dig +noall +answer @127.0.0.3 example.test AXFR | wc -l
+	# 統計 (isc_stats) と histogram (isc_histo) を通る経路を動かして読む。
+	i=0
+	while [ $i -lt 50 ]; do
+		dig +short @127.0.0.3 h$((i % 200 + 1)).example.test A > /dev/null
+		i=$((i + 1))
+	done
+	echo "== statistics channel"
+	ftp -V -o $W/stats.json http://127.0.0.3:8053/json/v1 && \
+	    tr ',' '\n' < $W/stats.json | grep -E '"(QUERY|A|XfrSuccess|AXFRReqv4|QryAuthAns|Requestv4)"' | head -10
+	ftp -V -o $W/traffic.json http://127.0.0.3:8053/json/v1/traffic && \
+	    tr ',' '\n' < $W/traffic.json | grep -v ':0$' | grep -E '[0-9]+-[0-9]+' | head -5
 fi
 
 kill $SPID $PPID_ 2>/dev/null
