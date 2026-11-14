@@ -54,9 +54,11 @@ options {
 	recursion no;
 	notify no;
 	transfer-source 127.0.0.3;
+	statistics-file "$W/s/named.stats";
 };
-statistics-channels { inet 127.0.0.3 port 8053 allow { 127.0.0.1; 127.0.0.3; }; };
-controls { };
+include "/etc/rndc.key";
+
+controls { inet 127.0.0.3 port 953 allow { 127.0.0.3; 127.0.0.1; } keys { rndc-key; }; };
 zone "example.test" {
 	type secondary;
 	primaries { 127.0.0.2; };
@@ -64,6 +66,7 @@ zone "example.test" {
 };
 EOF
 
+[ -f /etc/rndc.key ] || rndc-confgen -a -c /etc/rndc.key
 echo "== libisc and libdns in use"
 md5 /usr/lib/libisc.so.*.* /usr/lib/libdns.so.*.* 2>/dev/null
 
@@ -103,11 +106,9 @@ if [ $r = completed ]; then
 		dig +short @127.0.0.3 h$((i % 200 + 1)).example.test A > /dev/null
 		i=$((i + 1))
 	done
-	echo "== statistics channel"
-	ftp -V -o $W/stats.json http://127.0.0.3:8053/json/v1 && \
-	    tr ',' '\n' < $W/stats.json | grep -E '"(QUERY|A|XfrSuccess|AXFRReqv4|QryAuthAns|Requestv4)"' | head -10
-	ftp -V -o $W/traffic.json http://127.0.0.3:8053/json/v1/traffic && \
-	    tr ',' '\n' < $W/traffic.json | grep -v ':0$' | grep -E '[0-9]+-[0-9]+' | head -5
+	echo "== rndc stats"
+	rndc -k /etc/rndc.key -s 127.0.0.3 -p 953 stats && sleep 1 && \
+	    grep -E 'IPv4 requests received|queries resulted in successful answer|transfer requests succeeded|QUERY' $W/s/named.stats | head -10
 fi
 
 kill $SPID $PPID_ 2>/dev/null

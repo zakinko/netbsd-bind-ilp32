@@ -36,7 +36,9 @@ if [ $MODE = patched ]; then
 	    $SRC/external/mpl/bind/dist/lib/dns/zone.c
 fi
 
-M="make NETBSDSRCDIR=$SRC USETOOLS=no MKDOC=no MKLINT=no MKPROFILE=no MKDEBUGLIB=no MKSTATICLIB=no -j$J"
+# DPADD は依存の追跡にしか使われない。src の全体は取り出していないので、
+# libpthread などの obj を探しに行かないよう空にする。link は LDADD が行う。
+M="make NETBSDSRCDIR=$SRC USETOOLS=no DPADD= MKDOC=no MKLINT=no MKPROFILE=no MKDEBUGLIB=no MKSTATICLIB=no -j$J"
 # libisc は libuv を libuv_pic.a から static に取り込むので、先に建てる。
 (cd $SRC/external/mit/libuv/lib && $M dependall)
 (cd $SRC/external/mpl/bind/lib/libisc && $M dependall)
