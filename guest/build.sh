@@ -20,7 +20,9 @@ if [ ! -d $SRC/external/mpl/bind ]; then
 	df -h /
 	ftp -V -o /root/src.tgz \
 	    https://cdn.NetBSD.org/pub/NetBSD/NetBSD-$REL/source/sets/src.tgz
-	(cd / && tar -xzf /root/src.tgz \
+	# src.tgz の CVS/Root は CVS/LinkRoot への hard link で、取り出す範囲に
+	# 元が無いと tar がエラーで終わる。CVS は要らないので外す。
+	(cd / && tar -xzf /root/src.tgz --exclude CVS \
 	    usr/src/external/mpl/bind \
 	    usr/src/external/mit/libuv \
 	    usr/src/external/lgpl2/userspace-rcu)
