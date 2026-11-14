@@ -30,7 +30,9 @@ concurrency:
 jobs:
   repro:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # i386 は KVM で 15 分ほど。macppc などは emulation で libdns を建てるので
+    # 数時間かかる。
+    timeout-minutes: ${{ startsWith(inputs.image || 'i386', 'i386') && 90 || 340 }}
     env:
       IMG: ${{ inputs.image || 'i386-11.0' }}
       DIFF: ${{ inputs.diff || 'bind-ilp32.diff' }}
@@ -45,7 +47,8 @@ jobs:
       - name: qemu を入れる
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 netcat-openbsd
+          sudo apt-get install -y -qq qemu-system-x86 qemu-system-ppc \
+            qemu-system-arm qemu-system-misc netcat-openbsd
           sudo chmod 666 /dev/kvm
           ls -l /dev/kvm
 
@@ -55,6 +58,10 @@ jobs:
           B=https://github.com/zakinko/netbsd-ci-images/releases/download/images
           curl -fsSL -O $B/$IMG.qcow2
           curl -fsSL -O $B/$IMG.qemu
+          # 起動のたびに要るもの (macppc の bootiso など)。無い port のほうが多い。
+          for e in kernel bootiso dtb; do
+            curl -fsSL -O $B/$IMG.$e || true
+          done
           DIR=$PWD sh ci/runvm.sh $IMG 2222
 
       - name: script を送る
